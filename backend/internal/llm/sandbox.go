@@ -3,10 +3,43 @@ package llm
 import (
 	"context"
 	"encoding/json"
+	"regexp"
 	"strings"
 
 	"vtb-copilot-backend/internal/domain"
 )
+
+var criticalMarkerPattern = regexp.MustCompile(`(?i)(?:систем[а-яё]*\s+антифрод[а-яё]*|подозрительн[а-яё]*\s+получател[а-яё]*|порог[а-яё]*\s+сумм[а-яё]*|обойти\s+блокировк[а-яё]*)`)
+
+// CheckGuardrails applies a conservative marker policy to the trainee answer only.
+// This is also used by the HTTP handler when no model is configured.
+func CheckGuardrails(card domain.SandboxCase, answer string) (domain.SandboxResponse, bool) {
+	if !criticalMarkerPattern.MatchString(answer) {
+		return domain.SandboxResponse{}, false
+	}
+	citation := "GEN, п. 5.2"
+	feedback := "Обнаружен критический маркер раскрытия внутренних признаков проверок или обхода блокировки. Не раскрывай клиенту критерии антифрода и комплаенса (GEN, п. 5.2)."
+	evaluation := domain.SandboxEvaluation{
+		CaseID: &card.ID, Score: 0, MaxScore: 10, Passed: false, CriticalError: true,
+		CriteriaResults: make([]domain.CriterionResult, 0, len(card.EvaluationCriteria)),
+		MissedPoints:    make([]domain.MissedPoint, 0, len(card.EvaluationCriteria)),
+		ErrorsFound:     []domain.EvaluationError{{Description: feedback, Critical: true, Citation: &citation}},
+		Feedback:        feedback, MainLesson: "Не раскрывай внутренние критерии проверок и не предлагай обход блокировки.",
+		Flags: []string{"guardrail_critical_marker"},
+	}
+	for _, criterion := range card.EvaluationCriteria {
+		evaluation.CriteriaResults = append(evaluation.CriteriaResults, domain.CriterionResult{
+			Criterion: criterion.Criterion, MaxPoints: criterion.Points, AwardedPoints: 0,
+			Verdict: "не выполнено", Comment: "Оценка обнулена из-за критического маркера безопасности.",
+		})
+		evaluation.MissedPoints = append(evaluation.MissedPoints, domain.MissedPoint{
+			Point: "Соблюдай запрет на раскрытие внутренних критериев проверок.", Criterion: criterion.Criterion, Citation: &citation,
+		})
+	}
+	return domain.SandboxResponse{
+		Evaluation: &evaluation, Score: 0, IsCorrect: false, Feedback: feedback, MissedRules: []string{citation},
+	}, true
+}
 
 func HasEvaluationContext(card domain.SandboxCase) bool {
 	if strings.TrimSpace(card.ReferenceAnswer) == "" || len(card.EvaluationCriteria) == 0 {
@@ -27,6 +60,9 @@ func HasEvaluationContext(card domain.SandboxCase) bool {
 func (c *Client) Evaluate(ctx context.Context, card domain.SandboxCase, answer string, chunks []domain.ChunkMatch) (domain.SandboxResponse, error) {
 	if !HasEvaluationContext(card) {
 		return domain.SandboxResponse{}, ErrMissingContext
+	}
+	if response, blocked := CheckGuardrails(card, answer); blocked {
+		return response, nil
 	}
 	criteria := make([]map[string]any, 0, len(card.EvaluationCriteria))
 	for _, criterion := range card.EvaluationCriteria {

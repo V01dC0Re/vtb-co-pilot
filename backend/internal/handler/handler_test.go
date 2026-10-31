@@ -30,6 +30,8 @@ func setupTestRouter(t *testing.T) *chi.Mux {
 	r.Get("/", h.Root)
 	r.Route("/api/v1", func(r chi.Router) {
 		r.Get("/cases", h.GetDemoCases)
+		r.Get("/rules", h.GetRules)
+		r.Get("/rules/{id}", h.GetRule)
 		r.Post("/copilot/resolve", h.ResolveCopilot)
 		r.Post("/sandbox/evaluate", h.EvaluateSandbox)
 	})
@@ -193,5 +195,59 @@ func TestSandboxUnavailableDoesNotGrade(t *testing.T) {
 	}
 	if !result.EvaluationUnavailable || result.IsCorrect || result.Evaluation != nil {
 		t.Fatal("unavailable model assigned a grade")
+	}
+}
+
+func TestRulesEndpoints(t *testing.T) {
+	router := setupTestRouter(t)
+	list := httptest.NewRecorder()
+	router.ServeHTTP(list, httptest.NewRequest(http.MethodGet, "/api/v1/rules", nil))
+	var chunks []domain.Chunk
+	if list.Code != http.StatusOK {
+		t.Fatalf("list status: %d", list.Code)
+	}
+	if err := json.Unmarshal(list.Body.Bytes(), &chunks); err != nil {
+		t.Fatal(err)
+	}
+	if len(chunks) == 0 {
+		t.Fatal("empty rule array")
+	}
+	for _, chunk := range chunks {
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/rules/"+chunk.ID, nil))
+		var got domain.Chunk
+		if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+			t.Fatal(err)
+		}
+		if rec.Code != http.StatusOK || got != chunk {
+			t.Fatalf("rule %s mismatch: %+v", chunk.ID, got)
+		}
+	}
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/rules/unknown", nil))
+	if rec.Code != http.StatusNotFound || !bytes.Contains(rec.Body.Bytes(), []byte(`"error":"rule_not_found"`)) {
+		t.Fatalf("unknown rule: %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestSandboxGuardrailWithoutModel(t *testing.T) {
+	router := setupTestRouter(t)
+	for _, field := range []string{"trainee_answer", "trainee_solution"} {
+		rec := httptest.NewRecorder()
+		body, err := json.Marshal(map[string]string{"case_id": "SANDBOX-01", field: "Предлагаю обойти блокировку"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		router.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/v1/sandbox/evaluate", bytes.NewReader(body)))
+		var resp domain.SandboxResponse
+		if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+			t.Fatal(err)
+		}
+		if rec.Code != 200 || resp.Score != 0 || resp.IsCorrect || resp.EvaluationUnavailable || resp.Evaluation == nil || !resp.Evaluation.CriticalError {
+			t.Fatalf("guardrail failed for %s: %+v", field, resp)
+		}
+		if len(resp.MissedRules) != 1 || resp.MissedRules[0] != "GEN, п. 5.2" {
+			t.Fatalf("missing citation: %+v", resp)
+		}
 	}
 }

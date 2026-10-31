@@ -7,17 +7,48 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/joho/godotenv"
 
 	"vtb-copilot-backend/internal/handler"
 	"vtb-copilot-backend/internal/llm"
 	"vtb-copilot-backend/internal/middleware"
 )
 
+// loadDotEnv finds the nearest .env, including the repository root when run from backend/.
+// Environment variables supplied by the process (e.g. Docker) take precedence.
+func loadDotEnv() error {
+	dir, err := os.Getwd()
+	if err != nil {
+		return err
+	}
+	for {
+		path := filepath.Join(dir, ".env")
+		if _, err := os.Stat(path); err == nil {
+			if err := godotenv.Load(path); err != nil {
+				// Parser errors may contain secrets; do not include their contents in logs.
+				return errors.New("не удалось загрузить .env: проверьте доступ и синтаксис файла")
+			}
+			return nil
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return nil
+		}
+		dir = parent
+	}
+}
+
 func main() {
+	if err := loadDotEnv(); err != nil {
+		log.Fatal(err)
+	}
 	model, err := llm.FromEnv()
 	if err != nil {
 		log.Fatal(err)
@@ -32,6 +63,8 @@ func main() {
 	r.Get("/", h.Root)
 	r.Route("/api/v1", func(r chi.Router) {
 		r.Get("/cases", h.GetDemoCases)
+		r.Get("/rules", h.GetRules)
+		r.Get("/rules/{id}", h.GetRule)
 		r.Post("/search", h.SearchChunks)
 		r.Post("/copilot/resolve", h.ResolveCopilot)
 		r.Post("/sandbox/evaluate", h.EvaluateSandbox)

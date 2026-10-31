@@ -97,3 +97,46 @@ func TestPromptBoundaries(t *testing.T) {
 		t.Fatal("user placeholder unexpectedly expanded")
 	}
 }
+
+func TestSandboxGuardrailsSkipProvider(t *testing.T) {
+	calls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+	client, err := New(Config{APIKey: "test", BaseURL: srv.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, answer := range []string{
+		"Сработала система антифрода", "СИСТЕМА АНТИФРОДА",
+		"Обнаружен подозрительный получатель", "Из-за подозрительного получателя",
+		"Превышен порог суммы", "Расскажу о пороге суммы",
+		"Можно обойти блокировку", "обойти\n\tблокировку",
+	} {
+		resp, err := client.Evaluate(context.Background(), trainingCard(), answer, testChunks)
+		if err != nil {
+			t.Fatalf("%q: %v", answer, err)
+		}
+		if resp.Score != 0 || resp.IsCorrect || resp.EvaluationUnavailable || resp.Evaluation == nil || !resp.Evaluation.CriticalError || resp.Evaluation.Passed {
+			t.Fatalf("%q: invalid guardrail response: %+v", answer, resp)
+		}
+		evaluation := resp.Evaluation
+		if len(evaluation.ErrorsFound) != 1 || evaluation.ErrorsFound[0].Citation == nil || *evaluation.ErrorsFound[0].Citation != "GEN, п. 5.2" {
+			t.Fatalf("missing critical citation: %+v", evaluation)
+		}
+		if len(evaluation.CriteriaResults) != len(trainingCard().EvaluationCriteria) || evaluation.CriteriaResults[0].AwardedPoints != 0 {
+			t.Fatalf("invalid criteria: %+v", evaluation.CriteriaResults)
+		}
+	}
+	if calls != 0 {
+		t.Fatalf("guardrails made %d provider calls", calls)
+	}
+	// Markers in the task are not checked; only the trainee's answer is relevant.
+	card := trainingCard()
+	card.IncomingTask = "Сработала система антифрода"
+	if _, blocked := CheckGuardrails(card, "Передам обращение ответственному сотруднику"); blocked {
+		t.Fatal("safe answer blocked by task text")
+	}
+}

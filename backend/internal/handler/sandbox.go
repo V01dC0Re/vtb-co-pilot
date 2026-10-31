@@ -30,6 +30,10 @@ func (h *Handler) EvaluateSandbox(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": "missing_context", "detail": "Не найдена карточка с эталонным ответом и критериями оценки на 10 баллов."})
 		return
 	}
+	if response, blocked := llm.CheckGuardrails(*card, req.GetAnswer()); blocked {
+		writeJSON(w, http.StatusOK, response)
+		return
+	}
 	fallback := domain.SandboxResponse{EvaluationUnavailable: true, EscalationRequired: true, Feedback: "Не удалось получить проверенную оценку. Ответ не оценён; повтори проверку позже или передай его наставнику.", MissedRules: []string{}}
 	if h.sandboxGenerator == nil {
 		writeJSON(w, http.StatusOK, fallback)

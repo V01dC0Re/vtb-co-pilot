@@ -72,6 +72,24 @@ func Load(path string, threshold float64) (*Index, error) {
 
 func (idx *Index) Len() int { return len(idx.entries) }
 
+// Chunks returns all source chunks in file order without exposing the index storage.
+func (idx *Index) Chunks() []domain.Chunk {
+	chunks := make([]domain.Chunk, 0, len(idx.entries))
+	for _, item := range idx.entries {
+		chunks = append(chunks, item.chunk)
+	}
+	return chunks
+}
+
+func (idx *Index) ChunkByID(id string) (domain.Chunk, bool) {
+	for _, item := range idx.entries {
+		if item.chunk.ID == id {
+			return item.chunk, true
+		}
+	}
+	return domain.Chunk{}, false
+}
+
 // ReferenceChunks expands the compact reference notation used in training cards.
 // Only existing citations are returned; no rules are inferred from the answer.
 func (idx *Index) ReferenceChunks(references string) []domain.ChunkMatch {
